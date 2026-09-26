@@ -19,18 +19,18 @@ body.eh-hover-only .nav-folder-title:not(:hover):not(.eh-is-masked) > .eh-btn {
 }
 
 /* Names replaced by stars */
-.eh-mask-text { font-size: 0 !important; }
+body .eh-mask-text.eh-mask-text { font-size: 0; }
 .eh-mask-text::after {
   content: attr(data-eh-stars);
   font-size: var(--font-ui-small, 13px);
   letter-spacing: 1px;
 }
 .view-header-title.eh-mask-text::after { font-size: var(--font-ui-medium, 15px); }
-.eh-gone { display: none !important; }
+body .eh-gone.eh-gone { display: none; }
 
 /* Note content replaced by stars */
-.eh-masked-content { position: relative !important; }
-.eh-masked-content > :not(.eh-overlay) { visibility: hidden !important; }
+.eh-masked-content.eh-masked-content { position: relative; }
+.eh-masked-content.eh-masked-content > :not(.eh-overlay) { visibility: hidden; }
 .eh-overlay {
   position: absolute;
   inset: 0;

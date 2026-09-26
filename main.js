@@ -1,14 +1,20 @@
 'use strict';
-const { Plugin, PluginSettingTab, Setting, setIcon, Platform, Notice, TFile } = require('obsidian');
+const { Plugin, PluginSettingTab, Setting, setIcon, Platform, Notice, TFile, TFolder } = require('obsidian');
 
 const STARS = '********';
+const FM_KEY = 'masked';        // frontmatter property used for notes
+const MARKER = '.masked';       // hidden marker file used for folders
+const RESCAN_MS = 20000;        // how often folder markers are re-read (sync from other devices)
+
 const DEFAULTS = {
-  maskedPaths: [],     // notes/folders to mask
-  revealAll: false,    // ribbon eye open = everything shown in clear
+  maskedPaths: [],     // only non-Markdown files (PDF, images...) are stored here, per vault
+  revealAll: false,    // ribbon eye open = everything shown in clear (per device)
   hoverOnly: true,     // desktop: show eye buttons on hover only
   hideInSearch: true,  // masked notes left out of search results
   hideInSwitcher: true // masked notes left out of the quick switcher
 };
+
+const isTrue = (v) => v === true || v === 'true' || v === 'yes';
 
 class EyeHiderPlugin extends Plugin {
   async onload() {
@@ -16,6 +22,7 @@ class EyeHiderPlugin extends Plugin {
     if (Array.isArray(data.hiddenPaths) && !data.maskedPaths) data.maskedPaths = data.hiddenPaths; // v1 migration
     delete data.hiddenPaths; delete data.revealHidden;
     this.settings = Object.assign({}, DEFAULTS, data);
+    this.maskedFolders = new Set();
     this.observed = new WeakSet();
     this.observers = [];
     this.pending = false;
@@ -45,16 +52,23 @@ class EyeHiderPlugin extends Plugin {
         .onClick(() => this.onEyeClick(file.path)));
     }));
 
-    this.registerEvent(this.app.vault.on('rename', (file, oldPath) => this.onRename(oldPath, file.path)));
-    this.registerEvent(this.app.vault.on('delete', (file) => this.onDelete(file.path)));
+    this.registerEvent(this.app.vault.on('rename', (file, oldPath) => this.onRename(file, oldPath)));
+    this.registerEvent(this.app.vault.on('delete', (file) => this.onDelete(file)));
+    this.registerEvent(this.app.vault.on('create', (file) => { if (file instanceof TFolder) this.scanFolders(); }));
     this.registerEvent(this.app.vault.on('modify', () => this.schedule()));
+    this.registerEvent(this.app.metadataCache.on('changed', () => this.schedule()));
+    this.registerEvent(this.app.metadataCache.on('resolved', () => this.schedule()));
     this.registerEvent(this.app.workspace.on('layout-change', () => this.attach()));
     this.registerEvent(this.app.workspace.on('active-leaf-change', () => this.schedule()));
     this.registerEvent(this.app.workspace.on('file-open', () => this.schedule()));
+    this.registerDomEvent(window, 'focus', () => this.scanFolders());
+    this.registerInterval(window.setInterval(() => this.scanFolders(), RESCAN_MS));
 
     this.addSettingTab(new EyeHiderSettingTab(this.app, this));
     this.applyBodyClasses();
-    this.app.workspace.onLayoutReady(() => {
+    this.app.workspace.onLayoutReady(async () => {
+      await this.scanFolders();
+      await this.migrateLocalList();
       this.attach();
       this.patchSwitcher();
     });
@@ -68,19 +82,97 @@ class EyeHiderPlugin extends Plugin {
     document.body.classList.remove('eh-hover-only');
   }
 
-  // ---------- state ----------
+  // ---------- where the mask state lives ----------
+  // Notes: "masked: true" in frontmatter. Folders: hidden ".masked" file inside the folder.
+  // Other files: local list in data.json. Notes and folders therefore sync with the vault.
+  isSelfMasked(path) {
+    const af = this.app.vault.getAbstractFileByPath(path);
+    if (af instanceof TFolder) return this.maskedFolders.has(path);
+    if (af instanceof TFile && af.extension === 'md') {
+      const fm = this.app.metadataCache.getFileCache(af)?.frontmatter;
+      return !!(fm && isTrue(fm[FM_KEY]));
+    }
+    return this.settings.maskedPaths.includes(path);
+  }
+
   coveringEntry(path) {
     if (!path) return null;
-    let best = null;
-    for (const p of this.settings.maskedPaths) {
-      if (path === p || path.startsWith(p + '/')) {
-        if (!best || p.length > best.length) best = p;
-      }
+    if (this.isSelfMasked(path)) return path;
+    const parts = path.split('/');
+    for (let i = parts.length - 1; i > 0; i--) {
+      const parent = parts.slice(0, i).join('/');
+      if (this.maskedFolders.has(parent)) return parent;
     }
-    return best;
+    return null;
   }
   isMasked(path) { return this.coveringEntry(path) !== null; }
   isMaskActive(path) { return !this.settings.revealAll && this.isMasked(path); }
+
+  async setMasked(path, on) {
+    const af = this.app.vault.getAbstractFileByPath(path);
+    if (af instanceof TFolder) {
+      const marker = path + '/' + MARKER;
+      if (on) {
+        await this.app.vault.adapter.write(marker, 'This folder is masked by the Eye Hider plugin. Delete this file to unmask it.\n');
+        this.maskedFolders.add(path);
+      } else {
+        if (await this.app.vault.adapter.exists(marker)) await this.app.vault.adapter.remove(marker);
+        this.maskedFolders.delete(path);
+      }
+    } else if (af instanceof TFile && af.extension === 'md') {
+      await this.app.fileManager.processFrontMatter(af, (fm) => {
+        if (on) fm[FM_KEY] = true; else delete fm[FM_KEY];
+      });
+    } else {
+      const list = this.settings.maskedPaths.filter((p) => p !== path);
+      if (on) list.push(path);
+      this.settings.maskedPaths = list;
+      await this.saveData(this.settings);
+    }
+    this.schedule();
+  }
+
+  async scanFolders() {
+    const folders = this.app.vault.getAllLoadedFiles().filter((f) => f instanceof TFolder && f.path !== '/' && !(f.isRoot && f.isRoot()));
+    const found = new Set();
+    await Promise.all(folders.map(async (f) => {
+      try { if (await this.app.vault.adapter.exists(f.path + '/' + MARKER)) found.add(f.path); } catch (e) { /* ignore */ }
+    }));
+    const same = found.size === this.maskedFolders.size && [...found].every((p) => this.maskedFolders.has(p));
+    if (!same) {
+      this.maskedFolders = found;
+      this.schedule();
+    }
+  }
+
+  // Move masks saved by v2.0 (a list of paths in data.json) into the notes and folders themselves.
+  async migrateLocalList() {
+    const keep = [];
+    let changed = false;
+    for (const p of this.settings.maskedPaths) {
+      const af = this.app.vault.getAbstractFileByPath(p);
+      if (af instanceof TFolder || (af instanceof TFile && af.extension === 'md')) {
+        try { await this.setMasked(p, true); changed = true; } catch (e) { keep.push(p); }
+      } else if (af) {
+        keep.push(p);
+      } else {
+        changed = true; // file no longer exists
+      }
+    }
+    if (changed) {
+      this.settings.maskedPaths = keep;
+      await this.saveData(this.settings);
+    }
+  }
+
+  listMasked() {
+    const out = [...this.maskedFolders];
+    for (const f of this.app.vault.getMarkdownFiles()) {
+      const fm = this.app.metadataCache.getFileCache(f)?.frontmatter;
+      if (fm && isTrue(fm[FM_KEY])) out.push(f.path);
+    }
+    return out.concat(this.settings.maskedPaths).sort();
+  }
 
   async save() {
     await this.saveData(this.settings);
@@ -88,24 +180,16 @@ class EyeHiderPlugin extends Plugin {
   }
 
   async onEyeClick(path) {
-    const list = this.settings.maskedPaths;
-    const i = list.indexOf(path);
-    if (i >= 0) {
-      list.splice(i, 1);
-    } else {
-      const cover = this.coveringEntry(path);
-      if (cover) {
-        new Notice(`Masked by the folder "${cover}". Unmask that folder instead.`);
-        return;
-      }
-      list.push(path);
+    if (this.isSelfMasked(path)) {
+      await this.setMasked(path, false);
+      return;
     }
-    await this.save();
-  }
-
-  async removeMask(path) {
-    this.settings.maskedPaths = this.settings.maskedPaths.filter((p) => p !== path);
-    await this.save();
+    const cover = this.coveringEntry(path);
+    if (cover) {
+      new Notice(`Masked by the folder "${cover}". Unmask that folder instead.`);
+      return;
+    }
+    await this.setMasked(path, true);
   }
 
   async toggleRevealAll() {
@@ -125,20 +209,26 @@ class EyeHiderPlugin extends Plugin {
     document.body.classList.toggle('eh-hover-only', this.settings.hoverOnly && !Platform.isMobile);
   }
 
-  onRename(oldPath, newPath) {
-    let changed = false;
-    this.settings.maskedPaths = this.settings.maskedPaths.map((p) => {
-      if (p === oldPath) { changed = true; return newPath; }
-      if (p.startsWith(oldPath + '/')) { changed = true; return newPath + p.slice(oldPath.length); }
-      return p;
-    });
-    if (changed) this.save(); else this.schedule();
+  onRename(file, oldPath) {
+    const newPath = file.path;
+    const move = (p) => (p === oldPath ? newPath : p.startsWith(oldPath + '/') ? newPath + p.slice(oldPath.length) : p);
+    if (file instanceof TFolder) this.maskedFolders = new Set([...this.maskedFolders].map(move));
+    const list = this.settings.maskedPaths.map(move);
+    if (list.some((p, i) => p !== this.settings.maskedPaths[i])) {
+      this.settings.maskedPaths = list;
+      this.save();
+    } else {
+      this.schedule();
+    }
   }
 
-  onDelete(path) {
+  onDelete(file) {
+    const path = file.path;
+    const gone = (p) => p === path || p.startsWith(path + '/');
+    this.maskedFolders = new Set([...this.maskedFolders].filter((p) => !gone(p)));
     const before = this.settings.maskedPaths.length;
-    this.settings.maskedPaths = this.settings.maskedPaths.filter((p) => p !== path && !p.startsWith(path + '/'));
-    if (this.settings.maskedPaths.length !== before) this.save();
+    this.settings.maskedPaths = this.settings.maskedPaths.filter((p) => !gone(p));
+    if (this.settings.maskedPaths.length !== before) this.save(); else this.schedule();
   }
 
   // ---------- DOM ----------
@@ -183,9 +273,9 @@ class EyeHiderPlugin extends Plugin {
       titles.forEach((title) => {
         const path = title.getAttribute('data-path');
         if (!path || path === '/') return;
-        const own = this.settings.maskedPaths.includes(path);
-        const masked = this.isMasked(path);
-        const active = this.isMaskActive(path);
+        const own = this.isSelfMasked(path);
+        const masked = own || this.isMasked(path);
+        const active = masked && !this.settings.revealAll;
 
         let btn = title.querySelector(':scope > .eh-btn');
         if (!btn) {
@@ -275,7 +365,7 @@ class EyeHiderPlugin extends Plugin {
       e.preventDefault();
       e.stopPropagation();
       const cover = this.coveringEntry(ov.dataset.path);
-      if (cover) this.removeMask(cover);
+      if (cover) this.setMasked(cover, false);
     });
     const label = document.createElement('span');
     label.textContent = 'Masked – tap the eye to reveal';
@@ -331,7 +421,7 @@ class EyeHiderSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('Reveal everything')
-      .setDesc('Same as the eye in the ribbon: shows all masked names and notes in clear.')
+      .setDesc('Same as the eye in the ribbon: shows all masked names and notes in clear on this device.')
       .addToggle((t) => t.setValue(p.settings.revealAll).onChange(async (v) => {
         p.settings.revealAll = v; p.updateRibbon(); await p.save();
       }));
@@ -356,18 +446,22 @@ class EyeHiderSettingTab extends PluginSettingTab {
         p.settings.hideInSwitcher = v; await p.save();
       }));
 
-    new Setting(containerEl).setName('Masked items').setHeading()
+    const items = p.listMasked();
+    new Setting(containerEl).setName('Masked items')
+      .setDesc('Notes are marked with "masked: true" in their properties and folders with a hidden ".masked" file, so masks sync with your vault.')
+      .setHeading()
       .addButton((b) => b.setButtonText('Unmask all').onClick(async () => {
-        p.settings.maskedPaths = []; await p.save(); this.display();
+        for (const path of p.listMasked()) await p.setMasked(path, false);
+        this.display();
       }));
 
-    if (p.settings.maskedPaths.length === 0) {
+    if (items.length === 0) {
       containerEl.createEl('p', { text: 'Nothing is masked.', cls: 'setting-item-description' });
     }
-    for (const path of [...p.settings.maskedPaths].sort()) {
+    for (const path of items) {
       new Setting(containerEl).setName(path)
         .addExtraButton((b) => b.setIcon('eye').setTooltip('Unmask').onClick(async () => {
-          await p.removeMask(path); this.display();
+          await p.setMasked(path, false); this.display();
         }));
     }
   }

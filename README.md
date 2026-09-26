@@ -12,6 +12,7 @@ An Obsidian plugin that masks notes and folders with stars (`********`) at the t
 - **Search and quick switcher**: masked notes are left out (can be turned off in settings).
 - Works on **desktop and mobile**. The long-press / right-click menu also has *Mask with stars* / *Unmask*.
 - Masks follow renames and moves.
+- **Masks sync with your vault**: a masked note gets `masked: true` in its properties, and a masked folder gets a hidden `.masked` file. Any sync tool that copies your notes (Google Drive, Syncthing, Git, iCloud...) carries the masks to your other devices.
 
 ## Installation
 
@@ -31,7 +32,9 @@ Add this repository in the [BRAT](https://github.com/TfTHacker/obsidian42-brat) 
 - A masked note can't be edited until it is revealed.
 - Embeds (`![[note]]`) and link text pointing to a masked note are not masked.
 - Hiding from search and the quick switcher uses Obsidian internals and may stop working after an Obsidian update (masking in the explorer and notes is unaffected).
-- Masked items are stored per device.
+- Folder masks use a hidden `.masked` file. Sync tools that skip hidden files (such as Obsidian Sync) won't carry folder masks; note masks sync everywhere.
+- Masks on non-Markdown files (PDF, images) are stored in the plugin settings of each vault.
+- *Reveal everything* is per device.
 
 ## License
 
