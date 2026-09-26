@@ -1,0 +1,9 @@
+{
+  "id": "eye-hider",
+  "name": "Eye Hider",
+  "version": "2.0.0",
+  "minAppVersion": "1.0.0",
+  "description": "Eye button next to every note and folder to mask its name and content with stars (*). A ribbon eye reveals or masks everything at once.",
+  "author": "Yassine",
+  "isDesktopOnly": false
+}

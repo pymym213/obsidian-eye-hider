@@ -1,0 +1,58 @@
+/* Eye button at the right of each note / folder */
+.eh-btn {
+  margin-left: auto;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  padding: 2px 4px;
+  opacity: 0.55;
+  cursor: pointer;
+}
+.eh-btn svg { width: 14px; height: 14px; }
+.eh-btn:hover { opacity: 1; }
+.eh-btn.eh-inherited { opacity: 0.25; }
+
+/* Desktop option: show the button on hover only (always shown for masked items) */
+body.eh-hover-only .nav-file-title:not(:hover):not(.eh-is-masked) > .eh-btn,
+body.eh-hover-only .nav-folder-title:not(:hover):not(.eh-is-masked) > .eh-btn {
+  visibility: hidden;
+}
+
+/* Names replaced by stars */
+.eh-mask-text { font-size: 0 !important; }
+.eh-mask-text::after {
+  content: attr(data-eh-stars);
+  font-size: var(--font-ui-small, 13px);
+  letter-spacing: 1px;
+}
+.view-header-title.eh-mask-text::after { font-size: var(--font-ui-medium, 15px); }
+.eh-gone { display: none !important; }
+
+/* Note content replaced by stars */
+.eh-masked-content { position: relative !important; }
+.eh-masked-content > :not(.eh-overlay) { visibility: hidden !important; }
+.eh-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  overflow: auto;
+  background: var(--background-primary);
+  padding: 16px 24px;
+}
+.eh-overlay-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small, 13px);
+  margin: 0 auto 12px;
+  max-width: var(--file-line-width, 700px);
+}
+.eh-overlay-body {
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: var(--text-muted);
+  line-height: 1.6;
+  max-width: var(--file-line-width, 700px);
+  margin: 0 auto;
+}
