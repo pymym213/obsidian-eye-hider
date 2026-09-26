@@ -2,6 +2,8 @@
 
 An Obsidian plugin that masks notes and folders with stars (`********`) at the tap of an eye.
 
+![Eye Hider: before and after masking](assets/demo.svg)
+
 ## Features
 
 - **Eye button next to every note and folder** in the file explorer. Tap it to mask the item's name; masking a folder masks everything inside it.
