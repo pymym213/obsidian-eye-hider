@@ -63,6 +63,7 @@ class EyeHiderPlugin extends Plugin {
     this.registerEvent(this.app.workspace.on('file-open', () => this.schedule()));
     this.registerDomEvent(window, 'focus', () => this.scanFolders());
     this.registerInterval(window.setInterval(() => this.scanFolders(), RESCAN_MS));
+    this.registerInterval(window.setInterval(() => this.refreshGraphs(), 500));
 
     this.addSettingTab(new EyeHiderSettingTab(this.app, this));
     this.applyBodyClasses();
@@ -265,6 +266,45 @@ class EyeHiderPlugin extends Plugin {
     this.refreshExplorer();
     this.refreshSearch();
     this.refreshLeaves();
+    this.refreshGraphs();
+  }
+
+  // Graph and local graph labels (Obsidian internals; skipped silently if they change)
+  refreshGraphs() {
+    for (const type of ['graph', 'localgraph']) {
+      for (const leaf of this.app.workspace.getLeavesOfType(type)) {
+        try {
+          const r = leaf.view && leaf.view.renderer;
+          if (!r || !Array.isArray(r.nodes)) continue;
+          let changed = false;
+          for (const node of r.nodes) changed = this.maskGraphNode(node) || changed;
+          if (changed && typeof r.changed === 'function') r.changed();
+        } catch (e) { /* ignore */ }
+      }
+    }
+  }
+
+  maskGraphNode(node) {
+    if (!node || typeof node.id !== 'string') return false;
+    const proto = Object.getPrototypeOf(node);
+    if (proto && typeof proto.getDisplayText === 'function' && !proto.__ehPatched) {
+      const orig = proto.getDisplayText;
+      const plugin = this;
+      proto.getDisplayText = function () {
+        return plugin.isMaskActive(this.id) ? STARS : orig.call(this);
+      };
+      proto.__ehPatched = true;
+      this.register(() => { proto.getDisplayText = orig; delete proto.__ehPatched; });
+    }
+    const label = node.text;
+    if (!label || typeof label.text !== 'string') return false;
+    if (this.isMaskActive(node.id)) {
+      if (label.text !== STARS) { label.text = STARS; return true; }
+    } else if (label.text === STARS) {
+      label.text = typeof node.getDisplayText === 'function' ? node.getDisplayText() : node.id.split('/').pop().replace(/\.md$/, '');
+      return true;
+    }
+    return false;
   }
 
   refreshExplorer() {
